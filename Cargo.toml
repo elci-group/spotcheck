@@ -1,0 +1,9 @@
+[package]
+name = "spotcheck"
+version = "0.1.1"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.28"
+arboard = "3.4"
