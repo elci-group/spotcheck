@@ -22,7 +22,7 @@ patch = 0.1    # score at or above this bumps Patch; below it, no commit
 
 [push]
 enabled = true
-branch = "master"
+branch = "main"
 
 [ratelimit]
 min_commit_interval = 10
