@@ -1,6 +1,22 @@
 # spotcheck
 
-Precision text extraction for the terminal. Select anything visible in your terminal without touching the mouse.
+```
+  ██████╗ █████╗  ██████╗██╗  ██╗███████╗██████╗ 
+ ██╔════╝██╔══██╗██╔════╝██║ ██╔╝██╔════╝██╔══██╗
+ ██║     ███████║██║     █████╔╝ █████╗  ██████╔╝
+ ██║     ██╔══██║██║     ██╔═██╗ ██╔══╝  ██╔══██╗
+ ╚██████╗██║  ██║╚██████╗██║  ██╗███████╗██║  ██║
+  ╚═════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
+                                                 
+    Precision text extraction for the terminal
+```
+
+Select anything visible in your terminal without touching the mouse.
+
+<!-- Demo GIF placeholder -->
+<!-- 
+![spotcheck demo](docs/demo.gif)
+-->
 
 ## The Problem
 
