@@ -406,10 +406,8 @@ fn copy_to_clipboard(text: &str) -> io::Result<()> {
     ))
 }
 
-fn main() -> io::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-
-    let demo_buffer = vec![
+fn demo_buffer() -> Vec<String> {
+    vec![
         "Aug 03 19:42:11 server nginx[4421]: failed to bind port 443".to_string(),
         "Aug 03 19:42:12 server nginx[4421]: retrying".to_string(),
         "Aug 03 19:42:13 server nginx[4421]: successfully bound port 443".to_string(),
@@ -417,14 +415,19 @@ fn main() -> io::Result<()> {
         "".to_string(),
         "Aug 03 19:43:00 server systemd[1]: Started nginx service".to_string(),
         "Aug 03 19:43:01 server kernel: TCP: established socket".to_string(),
-    ];
+    ]
+}
 
-    // Test mode: --test "start_search" "end_search"
-    if args.len() == 4 && args[1] == "--test" {
-        let start_search = &args[2];
-        let end_search = &args[3];
-
-        let mut state = SpotcheckState::new(demo_buffer);
+fn print_usage() {
+    println!("spotcheck {}", env!("CARGO_PKG_VERSION"));
+    println!("Precision text extraction for the terminal.");
+    println!();
+    println!("USAGE:");
+    println!("    command | spotcheck");
+    println!("    spotcheck --test <start> <end>");
+    println!("    spotcheck --help");
+    println!("    spotcheck --version");
+}
 
         // Simulate start point selection
         state.input = start_search.clone();
