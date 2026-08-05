@@ -11,7 +11,11 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
-use std::io::{self, stdout, Stdout};
+use std::io::{self, stdout, IsTerminal, Read, Stdout, Write};
+use std::process::{Command, Stdio};
+
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 type Backend = CrosstermBackend<Stdout>;
 
@@ -116,26 +120,26 @@ impl SpotcheckState {
             }
         } else if start_line < end_line {
             let mut result = String::new();
-            
+
             // First line (from start_col to end)
             if let Some(line) = self.buffer.get(start_line) {
                 let start = start_col.min(line.len());
                 result.push_str(&line[start..]);
                 result.push('\n');
             }
-            
+
             // Middle lines (full lines)
             for line in self.buffer.iter().take(end_line).skip(start_line + 1) {
                 result.push_str(line);
                 result.push('\n');
             }
-            
+
             // Last line (from start to end_col)
             if let Some(line) = self.buffer.get(end_line) {
                 let end = end_col.min(line.len());
                 result.push_str(&line[..end]);
             }
-            
+
             return Some(result);
         }
 
@@ -143,7 +147,71 @@ impl SpotcheckState {
     }
 }
 
-fn run_spotcheck(terminal: &mut Terminal<Backend>, buffer: Vec<String>) -> io::Result<Option<String>> {
+fn strip_ansi(text: &str) -> String {
+    let mut clean = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            clean.push(ch);
+        }
+    }
+    clean
+}
+
+fn buffer_from_stdin() -> io::Result<Vec<String>> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+    let input = strip_ansi(&input);
+    Ok(input.lines().map(str::to_owned).collect())
+}
+
+#[cfg(unix)]
+struct TtyStdin {
+    original_fd: i32,
+}
+
+#[cfg(unix)]
+impl TtyStdin {
+    fn open() -> io::Result<Self> {
+        let tty = std::fs::File::open("/dev/tty")?;
+        let original_fd = unsafe { libc::dup(0) };
+        if original_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::dup2(tty.as_raw_fd(), 0) } < 0 {
+            let error = io::Error::last_os_error();
+            unsafe {
+                libc::close(original_fd);
+            }
+            return Err(error);
+        }
+        Ok(Self { original_fd })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TtyStdin {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dup2(self.original_fd, 0);
+            libc::close(self.original_fd);
+        }
+    }
+}
+
+fn run_spotcheck(
+    terminal: &mut Terminal<Backend>,
+    buffer: Vec<String>,
+) -> io::Result<Option<String>> {
     let mut state = SpotcheckState::new(buffer);
 
     loop {
@@ -170,7 +238,8 @@ fn run_spotcheck(terminal: &mut Terminal<Backend>, buffer: Vec<String>) -> io::R
                 }
                 KeyCode::Down => {
                     if !state.matches.is_empty() {
-                        state.selected_match = (state.selected_match + 1).min(state.matches.len() - 1);
+                        state.selected_match =
+                            (state.selected_match + 1).min(state.matches.len() - 1);
                     }
                 }
                 KeyCode::Enter => {
@@ -193,7 +262,7 @@ fn run_spotcheck(terminal: &mut Terminal<Backend>, buffer: Vec<String>) -> io::R
 
 fn ui(f: &mut Frame, state: &SpotcheckState) {
     let size = f.area();
-    
+
     // Layout: input bar at top, content in middle, status at bottom
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -209,18 +278,17 @@ fn ui(f: &mut Frame, state: &SpotcheckState) {
     let input_text = vec![
         Span::styled(
             &state.message,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(
-            &state.input,
-            Style::default().fg(Color::Green),
-        ),
+        Span::styled(&state.input, Style::default().fg(Color::Green)),
     ];
-    
-    let input_paragraph = Paragraph::new(Line::from(input_text))
-        .block(Block::default().borders(Borders::ALL));
-    
+
+    let input_paragraph =
+        Paragraph::new(Line::from(input_text)).block(Block::default().borders(Borders::ALL));
+
     f.render_widget(input_paragraph, chunks[0]);
 
     // Content area with highlighted matches
@@ -229,30 +297,36 @@ fn ui(f: &mut Frame, state: &SpotcheckState) {
 
     // Status bar
     let status_text = if state.mode == Mode::Done {
-        format!("Start: {:?}, End: {:?} | [Enter] Copy | [Esc] Cancel", 
-                state.start_point, state.end_point)
+        format!(
+            "Start: {:?}, End: {:?} | [Enter] Copy | [Esc] Cancel",
+            state.start_point, state.end_point
+        )
     } else {
-        format!("{} matches | [↑↓] Navigate | [Enter] Confirm | [Esc] Cancel", 
-                state.matches.len())
+        format!(
+            "{} matches | [↑↓] Navigate | [Enter] Confirm | [Esc] Cancel",
+            state.matches.len()
+        )
     };
-    
-    let status_paragraph = Paragraph::new(Line::from(status_text))
-        .block(Block::default().borders(Borders::ALL));
-    
+
+    let status_paragraph =
+        Paragraph::new(Line::from(status_text)).block(Block::default().borders(Borders::ALL));
+
     f.render_widget(status_paragraph, chunks[2]);
 }
 
 fn render_content(state: &SpotcheckState, _area: Rect) -> Paragraph<'_> {
     let mut lines = Vec::new();
-    
+
     for (line_idx, line) in state.buffer.iter().enumerate() {
         let mut spans = Vec::new();
-        
+
         // Check if this line has any matches
-        let line_matches: Vec<_> = state.matches.iter()
+        let line_matches: Vec<_> = state
+            .matches
+            .iter()
             .filter(|m| m.line == line_idx)
             .collect();
-        
+
         if line_matches.is_empty() {
             spans.push(Span::raw(line.clone()));
         } else {
@@ -262,51 +336,79 @@ fn render_content(state: &SpotcheckState, _area: Rect) -> Paragraph<'_> {
                 if pos < match_.start {
                     spans.push(Span::raw(line[pos..match_.start].to_string()));
                 }
-                
+
                 // The match itself
                 let is_selected = state.matches.get(state.selected_match) == Some(*match_);
                 let style = if is_selected {
-                    Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::Black).bg(Color::Cyan)
                 };
-                
+
                 spans.push(Span::styled(&match_.text, style));
                 pos = match_.end;
             }
-            
+
             // Text after the last match
             if pos < line.len() {
                 spans.push(Span::raw(line[pos..].to_string()));
             }
         }
-        
+
         lines.push(Line::from(spans));
     }
-    
-    Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(Block::default().borders(Borders::ALL).title("Terminal Buffer"))
+
+    Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Terminal Buffer"),
+    )
 }
 
 fn copy_to_clipboard(text: &str) -> io::Result<()> {
-    match arboard::Clipboard::new() {
-        Ok(mut clipboard) => {
-            clipboard.set_text(text)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Clipboard not available: {}", e);
-            Err(io::Error::new(io::ErrorKind::Other, e))
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if clipboard.set_text(text).is_ok() {
+            return Ok(());
         }
     }
+
+    for command in ["wl-copy", "xclip", "xsel"] {
+        let mut child = match Command::new(command)
+            .args(match command {
+                "xclip" => &["-selection", "clipboard"][..],
+                "xsel" => &["--clipboard", "--input"][..],
+                _ => &[][..],
+            })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => continue,
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            if stdin.write_all(text.as_bytes()).is_err() {
+                continue;
+            }
+        }
+        if child.wait()?.success() {
+            return Ok(());
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no usable clipboard backend found",
+    ))
 }
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    
-    // Demo buffer - in real implementation, this would come from terminal emulator
+
     let demo_buffer = vec![
         "Aug 03 19:42:11 server nginx[4421]: failed to bind port 443".to_string(),
         "Aug 03 19:42:12 server nginx[4421]: retrying".to_string(),
@@ -321,29 +423,30 @@ fn main() -> io::Result<()> {
     if args.len() == 4 && args[1] == "--test" {
         let start_search = &args[2];
         let end_search = &args[3];
-        
+
         let mut state = SpotcheckState::new(demo_buffer);
-        
+
         // Simulate start point selection
         state.input = start_search.clone();
         state.search();
         if !state.matches.is_empty() {
             state.confirm_selection();
         }
-        
+
         // Simulate end point selection - prefer matches on the same line as start
         state.input = end_search.clone();
         state.search();
         if !state.matches.is_empty() {
             // Try to find a match on the same line as start point
             if let Some((start_line, _)) = state.start_point {
-                if let Some(same_line_idx) = state.matches.iter().position(|m| m.line == start_line) {
+                if let Some(same_line_idx) = state.matches.iter().position(|m| m.line == start_line)
+                {
                     state.selected_match = same_line_idx;
                 }
             }
             state.confirm_selection();
         }
-        
+
         // Extract and print selection
         if let Some(selection) = state.extract_selection() {
             println!("Selection: '{}'", selection);
@@ -354,13 +457,36 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // Interactive mode
+    let stdin_is_tty = io::stdin().is_terminal();
+    if stdin_is_tty {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "pipe terminal output into spotcheck (for example: command | spotcheck)",
+        ));
+    }
+    let buffer = buffer_from_stdin()?;
+    if buffer.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no terminal output received on stdin",
+        ));
+    }
+
+    // Interactive mode. When output was piped in, keyboard events come from
+    // the controlling terminal while stdin remains available as the buffer.
+    #[cfg(unix)]
+    let _tty_stdin = if !stdin_is_tty {
+        Some(TtyStdin::open()?)
+    } else {
+        None
+    };
+
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_spotcheck(&mut terminal, demo_buffer)?;
+    let result = run_spotcheck(&mut terminal, buffer)?;
 
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen)?;
@@ -377,4 +503,22 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_common_ansi_sequences() {
+        assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m"), "red");
+    }
+
+    #[test]
+    fn extracts_multiline_selection() {
+        let mut state = SpotcheckState::new(vec!["one two".into(), "three four".into()]);
+        state.start_point = Some((0, 4));
+        state.end_point = Some((1, 5));
+        assert_eq!(state.extract_selection().as_deref(), Some("two\nthree"));
+    }
 }
