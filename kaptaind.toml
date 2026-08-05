@@ -24,6 +24,11 @@ patch = 0.1    # score at or above this bumps Patch; below it, no commit
 enabled = true
 branch = "main"
 
+[push.safety]
+# This repository intentionally uses kaptaind to publish its own automated
+# commits to main.
+protect_branches = []
+
 [ratelimit]
 min_commit_interval = 10
 
