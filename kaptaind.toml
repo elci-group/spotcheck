@@ -29,6 +29,9 @@ branch = "main"
 # commits to main.
 protect_branches = []
 
+[capabilities]
+network_push = true
+
 [ratelimit]
 min_commit_interval = 10
 
