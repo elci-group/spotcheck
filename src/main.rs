@@ -429,70 +429,24 @@ fn print_usage() {
     println!("    spotcheck --version");
 }
 
-        // Simulate start point selection
-        state.input = start_search.clone();
-        state.search();
-        if !state.matches.is_empty() {
-            state.confirm_selection();
-        }
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
 
-        // Simulate end point selection - prefer matches on the same line as start
-        state.input = end_search.clone();
-        state.search();
-        if !state.matches.is_empty() {
-            // Try to find a match on the same line as start point
-            if let Some((start_line, _)) = state.start_point {
-                if let Some(same_line_idx) = state.matches.iter().position(|m| m.line == start_line)
-                {
-                    state.selected_match = same_line_idx;
-                }
-            }
-            state.confirm_selection();
-        }
-
-        // Extract and print selection
-        if let Some(selection) = state.extract_selection() {
-            println!("Selection: '{}'", selection);
-            return Ok(());
-        } else {
-            println!("No valid selection");
-            return Ok(());
-        }
+    if args.len() == 2 && (args[1] == "--help" || args[1] == "-h") {
+        print_usage();
+        return Ok(());
+    }
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+        println!("spotcheck {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
     }
 
-    let stdin_is_tty = io::stdin().is_terminal();
-    if stdin_is_tty {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "pipe terminal output into spotcheck (for example: command | spotcheck)",
-        ));
-    }
-    let buffer = buffer_from_stdin()?;
-    if buffer.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "no terminal output received on stdin",
-        ));
-    }
+    // Test mode: --test "start_search" "end_search"
+    if args.len() == 4 && args[1] == "--test" {
+        let start_search = &args[2];
+        let end_search = &args[3];
 
-    // Interactive mode. When output was piped in, keyboard events come from
-    // the controlling terminal while stdin remains available as the buffer.
-    #[cfg(unix)]
-    let _tty_stdin = if !stdin_is_tty {
-        Some(TtyStdin::open()?)
-    } else {
-        None
-    };
-
-    enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = run_spotcheck(&mut terminal, buffer)?;
-
-    disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen)?;
+        let mut state = SpotcheckState::new(demo_buffer());
 
     if let Some(text) = result {
         println!("Selection: {}", text);
