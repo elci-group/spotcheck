@@ -448,6 +448,72 @@ fn main() -> io::Result<()> {
 
         let mut state = SpotcheckState::new(demo_buffer());
 
+        // Simulate start point selection
+        state.input = start_search.clone();
+        state.search();
+        if !state.matches.is_empty() {
+            state.confirm_selection();
+        }
+
+        // Simulate end point selection - prefer matches on the same line as start
+        state.input = end_search.clone();
+        state.search();
+        if !state.matches.is_empty() {
+            // Try to find a match on the same line as start point
+            if let Some((start_line, _)) = state.start_point {
+                if let Some(same_line_idx) = state.matches.iter().position(|m| m.line == start_line)
+                {
+                    state.selected_match = same_line_idx;
+                }
+            }
+            state.confirm_selection();
+        }
+
+        // Extract and print selection
+        if let Some(selection) = state.extract_selection() {
+            println!("Selection: '{}'", selection);
+            return Ok(());
+        } else {
+            println!("No valid selection");
+            return Ok(());
+        }
+    }
+
+    let stdin_is_tty = io::stdin().is_terminal();
+    let buffer = if stdin_is_tty {
+        demo_buffer()
+    } else {
+        buffer_from_stdin()?
+    };
+
+    if buffer.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no terminal output received on stdin",
+        ));
+    }
+
+    // Interactive mode. When output was piped in, keyboard events come from
+    // the controlling terminal while stdin remains available as the buffer.
+    #[cfg(unix)]
+    let _tty_stdin = if !stdin_is_tty {
+        Some(TtyStdin::open()?)
+    } else {
+        None
+    };
+
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = run_spotcheck(&mut terminal, buffer);
+
+    disable_raw_mode()?;
+    execute!(stdout(), LeaveAlternateScreen)?;
+
+    let result = result?;
+
     if let Some(text) = result {
         println!("Selection: {}", text);
         if copy_to_clipboard(&text).is_err() {
